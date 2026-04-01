@@ -35,6 +35,11 @@ func NewSender(token string, chatID int64, silent, disablePreview bool) (*Sender
 	}, nil
 }
 
+// BotAPI returns the underlying Telegram bot API instance (for command handling).
+func (s *Sender) BotAPI() *tgbotapi.BotAPI {
+	return s.bot
+}
+
 // SendIndividual sends a single story as its own message.
 // telegraphURL is optional — if non-empty, adds an Instant View button.
 func (s *Sender) SendIndividual(item *hackernews.Item, telegraphURL string) error {

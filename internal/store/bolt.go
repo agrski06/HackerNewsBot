@@ -8,13 +8,19 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-var bucketName = []byte("seen")
+var (
+	bucketName       = []byte("seen")
+	configBucketName = []byte("config")
+)
 
 // Store tracks which HN item IDs have already been sent
 type Store interface {
 	HasSeen(id int) bool
 	MarkSeen(id int) error
 	Prune(olderThan time.Duration) error
+	GetConfig(key string) (string, bool)
+	SetConfig(key, value string) error
+	DeleteConfig(key string) error
 	Close() error
 }
 
@@ -30,10 +36,15 @@ func NewBoltStore(path string) (*BoltStore, error) {
 		return nil, fmt.Errorf("opening bolt db at %s: %w", path, err)
 	}
 
-	// Ensure bucket exists
+	// Ensure buckets exist
 	err = db.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketName)
-		return err
+		if _, err := tx.CreateBucketIfNotExists(bucketName); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucketIfNotExists(configBucketName); err != nil {
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		db.Close()
@@ -96,6 +107,47 @@ func (s *BoltStore) Prune(olderThan time.Duration) error {
 			}
 		}
 		return nil
+	})
+}
+
+// GetConfig reads a runtime config value by key.
+func (s *BoltStore) GetConfig(key string) (string, bool) {
+	var val string
+	found := false
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(configBucketName)
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte(key))
+		if v != nil {
+			val = string(v)
+			found = true
+		}
+		return nil
+	})
+	return val, found
+}
+
+// SetConfig stores a runtime config value.
+func (s *BoltStore) SetConfig(key, value string) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(configBucketName)
+		if b == nil {
+			return fmt.Errorf("config bucket not found")
+		}
+		return b.Put([]byte(key), []byte(value))
+	})
+}
+
+// DeleteConfig removes a runtime config value.
+func (s *BoltStore) DeleteConfig(key string) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(configBucketName)
+		if b == nil {
+			return nil
+		}
+		return b.Delete([]byte(key))
 	})
 }
 
