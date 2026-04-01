@@ -10,6 +10,7 @@ import (
 	"HackerNewsBot/internal/hackernews"
 	"HackerNewsBot/internal/store"
 	"HackerNewsBot/internal/telegram"
+	"HackerNewsBot/internal/telegraph"
 )
 
 const (
@@ -21,19 +22,21 @@ const (
 
 // Bot orchestrates the fetch → filter → send pipeline
 type Bot struct {
-	cfg    *config.Config
-	hn     *hackernews.Client
-	store  store.Store
-	sender *telegram.Sender
+	cfg       *config.Config
+	hn        *hackernews.Client
+	store     store.Store
+	sender    *telegram.Sender
+	telegraph *telegraph.Client // nil if Telegraph is disabled
 }
 
 // New creates a new Bot
-func New(cfg *config.Config, hn *hackernews.Client, st store.Store, sender *telegram.Sender) *Bot {
+func New(cfg *config.Config, hn *hackernews.Client, st store.Store, sender *telegram.Sender, tg *telegraph.Client) *Bot {
 	return &Bot{
-		cfg:    cfg,
-		hn:     hn,
-		store:  st,
-		sender: sender,
+		cfg:       cfg,
+		hn:        hn,
+		store:     st,
+		sender:    sender,
+		telegraph: tg,
 	}
 }
 
@@ -98,20 +101,24 @@ func (b *Bot) tick(ctx context.Context) {
 
 	slog.Info("filtered stories", "count", len(filtered))
 
-	// Send
+	// Generate Telegraph discussion pages (if enabled).
+	telegraphURLs := b.generateTelegraphPages(ctx, filtered)
+
+	// Send.
 	if b.cfg.DigestMode {
-		if err := b.sender.SendDigest(filtered); err != nil {
+		if err := b.sender.SendDigest(filtered, telegraphURLs); err != nil {
 			slog.Error("failed to send digest", "error", err)
 			return
 		}
 		slog.Info("sent digest", "stories", len(filtered))
 	} else {
-		for _, item := range filtered {
-			if err := b.sender.SendIndividual(item); err != nil {
+		for i, item := range filtered {
+			tURL := telegraphURLs[i]
+			if err := b.sender.SendIndividual(item, tURL); err != nil {
 				slog.Error("failed to send story", "id", item.ID, "title", item.Title, "error", err)
 				continue
 			}
-			slog.Info("sent story", "id", item.ID, "title", item.Title, "score", item.Score)
+			slog.Info("sent story", "id", item.ID, "title", item.Title, "score", item.Score, "telegraph", tURL != "")
 			// Small delay between individual messages to avoid rate limits.
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -131,3 +138,48 @@ func (b *Bot) tick(ctx context.Context) {
 
 	slog.Info("fetch cycle complete")
 }
+
+// generateTelegraphPages creates Telegraph Instant View pages for each story's
+// discussion. Returns a map of item index → Telegraph URL.
+func (b *Bot) generateTelegraphPages(ctx context.Context, items []*hackernews.Item) map[int]string {
+	urls := make(map[int]string)
+
+	if b.telegraph == nil || !b.cfg.TelegraphEnabled {
+		return urls
+	}
+
+	for i, item := range items {
+		// Skip stories with no comments.
+		if item.Descendants == 0 {
+			slog.Debug("skipping telegraph for story with no comments", "id", item.ID)
+			continue
+		}
+
+		// Fetch comment tree.
+		comments, err := b.hn.GetCommentTree(ctx, item, b.cfg.MaxTopComments, b.cfg.MaxCommentDepth)
+		if err != nil {
+			slog.Warn("failed to fetch comments for telegraph", "id", item.ID, "error", err)
+			continue
+		}
+
+		if len(comments) == 0 {
+			continue
+		}
+
+		// Render to Telegraph nodes.
+		nodes := telegraph.RenderDiscussion(item, comments)
+
+		// Create Telegraph page.
+		page, err := b.telegraph.CreatePage(item.Title+" — HN Discussion", "HackerNewsBot", nodes)
+		if err != nil {
+			slog.Warn("failed to create telegraph page", "id", item.ID, "error", err)
+			continue
+		}
+
+		urls[i] = page.URL
+		slog.Info("created telegraph page", "id", item.ID, "url", page.URL, "comments", len(comments))
+	}
+
+	return urls
+}
+

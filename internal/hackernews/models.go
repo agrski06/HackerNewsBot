@@ -12,9 +12,19 @@ type Item struct {
 	By          string `json:"by"`
 	Time        int64  `json:"time"`
 	Title       string `json:"title"`
+	Text        string `json:"text"` // HTML body (comments, Ask HN posts)
 	URL         string `json:"url"`
 	Score       int    `json:"score"`
+	Kids        []int  `json:"kids"` // child comment IDs
 	Descendants int    `json:"descendants"` // comment count
+	Dead        bool   `json:"dead"`
+	Deleted     bool   `json:"deleted"`
+}
+
+// Comment is a tree node: an Item plus its resolved child comments.
+type Comment struct {
+	Item     *Item
+	Children []*Comment
 }
 
 // Age returns the duration since the item was posted

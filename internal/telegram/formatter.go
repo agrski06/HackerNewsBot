@@ -13,8 +13,9 @@ import (
 
 var numberEmojis = []string{"1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"}
 
-// FormatIndividual builds the HTML message text and inline keyboard for a single story
-func FormatIndividual(item *hackernews.Item) (string, tgbotapi.InlineKeyboardMarkup) {
+// FormatIndividual builds the HTML message text and inline keyboard for a single story.
+// If telegraphURL is non-empty, a "📝 Discussion" Instant View button is added.
+func FormatIndividual(item *hackernews.Item, telegraphURL string) (string, tgbotapi.InlineKeyboardMarkup) {
 	var sb strings.Builder
 
 	// Story type badge + title
@@ -32,13 +33,14 @@ func FormatIndividual(item *hackernews.Item) (string, tgbotapi.InlineKeyboardMar
 	sb.WriteString(fmt.Sprintf("⏰ %s", formatAge(item.Age())))
 
 	// Keyboard
-	keyboard := buildIndividualKeyboard(item)
+	keyboard := buildIndividualKeyboard(item, telegraphURL)
 
 	return sb.String(), keyboard
 }
 
-// FormatDigest builds the HTML message text and inline keyboard for a batch of stories
-func FormatDigest(items []*hackernews.Item) (string, tgbotapi.InlineKeyboardMarkup) {
+// FormatDigest builds the HTML message text and inline keyboard for a batch of stories.
+// telegraphURLs maps item index to its Telegraph page URL (may be empty for some).
+func FormatDigest(items []*hackernews.Item, telegraphURLs map[int]string) (string, tgbotapi.InlineKeyboardMarkup) {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("📰 <b>Hacker News Digest — %s</b>\n", time.Now().Format("Jan 2, 2006")))
@@ -59,7 +61,7 @@ func FormatDigest(items []*hackernews.Item) (string, tgbotapi.InlineKeyboardMark
 			item.Score, item.Descendants, html.EscapeString(item.By)))
 	}
 
-	keyboard := buildDigestKeyboard(items)
+	keyboard := buildDigestKeyboard(items, telegraphURLs)
 
 	return sb.String(), keyboard
 }
@@ -84,27 +86,34 @@ func effectiveURL(item *hackernews.Item) string {
 	return item.HNURL()
 }
 
-func buildIndividualKeyboard(item *hackernews.Item) tgbotapi.InlineKeyboardMarkup {
+func buildIndividualKeyboard(item *hackernews.Item, telegraphURL string) tgbotapi.InlineKeyboardMarkup {
 	hnURL := item.HNURL()
 
-	// If no external URL (e.g., Ask HN text post), show only one button
-	if item.URL == "" {
-		return tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonURL("💬 Read on HN", hnURL),
-			),
-		)
-	}
+	var rows [][]tgbotapi.InlineKeyboardButton
 
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
+	// If no external URL (e.g., Ask HN text post), show only HN button
+	if item.URL == "" {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("💬 Read on HN", hnURL),
+		))
+	} else {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonURL("📖 Read Article", item.URL),
 			tgbotapi.NewInlineKeyboardButtonURL("💬 HN Discussion", hnURL),
-		),
-	)
+		))
+	}
+
+	// Add Telegraph "Discussion" button if URL is available.
+	if telegraphURL != "" {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("📝 Read Discussion", telegraphURL),
+		))
+	}
+
+	return tgbotapi.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-func buildDigestKeyboard(items []*hackernews.Item) tgbotapi.InlineKeyboardMarkup {
+func buildDigestKeyboard(items []*hackernews.Item, telegraphURLs map[int]string) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 
 	for i, item := range items {
@@ -120,6 +129,13 @@ func buildDigestKeyboard(items []*hackernews.Item) tgbotapi.InlineKeyboardMarkup
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonURL(fmt.Sprintf("📖 Read #%d", num), item.URL),
 				tgbotapi.NewInlineKeyboardButtonURL(fmt.Sprintf("💬 HN #%d", num), hnURL),
+			))
+		}
+
+		// Add Telegraph button for this story if available.
+		if tURL, ok := telegraphURLs[i]; ok && tURL != "" {
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonURL(fmt.Sprintf("📝 Discussion #%d", num), tURL),
 			))
 		}
 	}

@@ -19,6 +19,11 @@ type Config struct {
 	DisablePreview   bool          `env:"HNB_DISABLE_PREVIEW" envDefault:"false"`
 	SilentMessages   bool          `env:"HNB_SILENT_MESSAGES" envDefault:"true"`
 	HealthPort       string        `env:"HNB_HEALTH_PORT" envDefault:"8080"`
+
+	// Telegraph (Instant View for HN discussions)
+	TelegraphEnabled  bool `env:"HNB_TELEGRAPH_ENABLED" envDefault:"true"`
+	MaxTopComments    int  `env:"HNB_MAX_TOP_COMMENTS" envDefault:"15"`
+	MaxCommentDepth   int  `env:"HNB_MAX_COMMENT_DEPTH" envDefault:"3"`
 }
 
 func Load() (*Config, error) {

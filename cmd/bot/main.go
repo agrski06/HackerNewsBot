@@ -14,6 +14,7 @@ import (
 	"HackerNewsBot/internal/hackernews"
 	"HackerNewsBot/internal/store"
 	"HackerNewsBot/internal/telegram"
+	"HackerNewsBot/internal/telegraph"
 )
 
 func main() {
@@ -54,6 +55,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create Telegraph client (for Instant View discussion pages).
+	var tg *telegraph.Client
+	if cfg.TelegraphEnabled {
+		tg, err = telegraph.NewClient("HackerNewsBot", "HN Bot")
+		if err != nil {
+			slog.Warn("failed to create telegraph client, continuing without Instant View", "error", err)
+			// Non-fatal: bot works fine without Telegraph.
+		}
+	}
+
 	// Start health check server (for Coolify monitoring)
 	go func() {
 		mux := http.NewServeMux()
@@ -73,7 +84,7 @@ func main() {
 	defer stop()
 
 	// Create and run bot
-	b := bot.New(cfg, hn, st, sender)
+	b := bot.New(cfg, hn, st, sender, tg)
 	b.Run(ctx)
 
 	slog.Info("shutdown complete")

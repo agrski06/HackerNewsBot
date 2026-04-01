@@ -35,9 +35,10 @@ func NewSender(token string, chatID int64, silent, disablePreview bool) (*Sender
 	}, nil
 }
 
-// SendIndividual sends a single story as its own message
-func (s *Sender) SendIndividual(item *hackernews.Item) error {
-	text, keyboard := FormatIndividual(item)
+// SendIndividual sends a single story as its own message.
+// telegraphURL is optional — if non-empty, adds an Instant View button.
+func (s *Sender) SendIndividual(item *hackernews.Item, telegraphURL string) error {
+	text, keyboard := FormatIndividual(item, telegraphURL)
 
 	msg := tgbotapi.NewMessage(s.chatID, text)
 	msg.ParseMode = tgbotapi.ModeHTML
@@ -48,9 +49,10 @@ func (s *Sender) SendIndividual(item *hackernews.Item) error {
 	return s.sendWithRetry(msg)
 }
 
-// SendDigest sends multiple stories as a single digest message
-func (s *Sender) SendDigest(items []*hackernews.Item) error {
-	text, keyboard := FormatDigest(items)
+// SendDigest sends multiple stories as a single digest message.
+// telegraphURLs maps item index to its Telegraph URL.
+func (s *Sender) SendDigest(items []*hackernews.Item, telegraphURLs map[int]string) error {
+	text, keyboard := FormatDigest(items, telegraphURLs)
 
 	msg := tgbotapi.NewMessage(s.chatID, text)
 	msg.ParseMode = tgbotapi.ModeHTML
