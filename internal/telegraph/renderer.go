@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/html"
+
 	"HackerNewsBot/internal/hackernews"
 )
 
@@ -94,12 +96,10 @@ func renderComment(c *hackernews.Comment, depth int) []Node {
 			Children: []Node{TextNode(authorText)},
 		})
 	} else {
-		// Indent indicator for nested comments.
-		prefix := strings.Repeat("↳ ", min(depth, 3))
 		nodes = append(nodes, ElementNode{
 			Tag: "p",
 			Children: []Node{
-				ElementNode{Tag: "b", Children: []Node{TextNode(prefix + authorText)}},
+				ElementNode{Tag: "b", Children: []Node{TextNode("↳ " + authorText)}},
 			},
 		})
 	}
@@ -125,66 +125,206 @@ func renderComment(c *hackernews.Comment, depth int) []Node {
 	return nodes
 }
 
-// parseHTMLToNodes converts HN comment HTML into Telegraph-compatible nodes.
-// HN comments use <p>, <a>, <pre><code>, <i> tags — all supported by Telegraph.
-// We wrap the raw HTML in a <p> tag. Telegraph's API accepts HTML strings as text
-// content within nodes, but we need to handle it carefully.
+// parseHTMLToNodes properly parses HN comment HTML into Telegraph nodes.
+//
+// HN comments contain HTML entities (&#x27; &#x2F; &amp; &quot;) and inline
+// tags (<a>, <i>, <b>, <code>, <pre>). We use a real HTML parser so that
+// entities are decoded and tags become proper Telegraph ElementNodes.
 func parseHTMLToNodes(htmlText string) []Node {
 	if htmlText == "" {
 		return nil
 	}
 
-	// HN uses <p> to separate paragraphs. Split on <p> and create separate paragraph nodes.
-	// First, normalize: replace common HN patterns.
-	text := strings.ReplaceAll(htmlText, "<p>", "\n<p>")
-	paragraphs := strings.Split(text, "\n")
+	// HN uses bare <p> (no </p>) to separate paragraphs.
+	// Wrap in a root element so the parser can handle it.
+	root := "<div>" + htmlText + "</div>"
 
+	doc, err := html.Parse(strings.NewReader(root))
+	if err != nil {
+		// Fallback: decode entities and return as plain text.
+		return []Node{ElementNode{
+			Tag:      "p",
+			Children: []Node{TextNode(html.UnescapeString(htmlText))},
+		}}
+	}
+
+	// Find our <div> wrapper and convert its children.
+	var divNode *html.Node
+	var findDiv func(*html.Node)
+	findDiv = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "div" {
+			divNode = n
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			findDiv(c)
+			if divNode != nil {
+				return
+			}
+		}
+	}
+	findDiv(doc)
+
+	if divNode == nil {
+		return []Node{ElementNode{
+			Tag:      "p",
+			Children: []Node{TextNode(html.UnescapeString(htmlText))},
+		}}
+	}
+
+	return convertChildren(divNode)
+}
+
+// convertChildren converts the children of an html.Node into Telegraph nodes.
+// It groups inline content into <p> paragraphs and preserves block-level elements.
+func convertChildren(parent *html.Node) []Node {
 	var nodes []Node
-	for _, p := range paragraphs {
-		p = strings.TrimSpace(p)
-		if p == "" || p == "<p>" {
-			continue
+	var inlineBuf []Node // accumulates inline content for a paragraph
+
+	flushInline := func() {
+		if len(inlineBuf) == 0 {
+			return
 		}
-
-		// Strip leading <p> tag if present (we'll wrap in our own).
-		p = strings.TrimPrefix(p, "<p>")
-		p = strings.TrimSuffix(p, "</p>")
-		p = strings.TrimSpace(p)
-
-		if p == "" {
-			continue
-		}
-
-		// Check if it's a code block.
-		if strings.HasPrefix(p, "<pre><code>") {
-			code := strings.TrimPrefix(p, "<pre><code>")
-			code = strings.TrimSuffix(code, "</code></pre>")
-			nodes = append(nodes, ElementNode{
-				Tag: "pre",
-				Children: []Node{
-					ElementNode{Tag: "code", Children: []Node{TextNode(code)}},
-				},
-			})
-			continue
-		}
-
-		// For regular text (may contain <a>, <i>, <b> inline tags),
-		// wrap in a <p> and use the raw text as a TextNode.
-		// Telegraph will handle the inline HTML.
-		nodes = append(nodes, ElementNode{
-			Tag:      "p",
-			Children: []Node{TextNode(p)},
-		})
+		// Trim leading/trailing whitespace-only text nodes.
+		nodes = append(nodes, ElementNode{Tag: "p", Children: inlineBuf})
+		inlineBuf = nil
 	}
 
-	if len(nodes) == 0 {
-		nodes = append(nodes, ElementNode{
-			Tag:      "p",
-			Children: []Node{TextNode(htmlText)},
-		})
+	for c := parent.FirstChild; c != nil; c = c.NextSibling {
+		switch {
+		case c.Type == html.TextNode:
+			text := c.Data
+			if strings.TrimSpace(text) != "" {
+				inlineBuf = append(inlineBuf, TextNode(text))
+			} else if len(inlineBuf) > 0 {
+				// Preserve meaningful whitespace between inline elements.
+				inlineBuf = append(inlineBuf, TextNode(" "))
+			}
+
+		case c.Type == html.ElementNode:
+			switch c.Data {
+			case "p":
+				// <p> starts a new paragraph.
+				flushInline()
+				children := convertInlineChildren(c)
+				if len(children) > 0 {
+					nodes = append(nodes, ElementNode{Tag: "p", Children: children})
+				}
+
+			case "pre":
+				// <pre> block — extract code content.
+				flushInline()
+				var code string
+				if c.FirstChild != nil && c.FirstChild.Type == html.ElementNode && c.FirstChild.Data == "code" {
+					code = extractText(c.FirstChild)
+				} else {
+					code = extractText(c)
+				}
+				nodes = append(nodes, ElementNode{
+					Tag: "pre",
+					Children: []Node{
+						ElementNode{Tag: "code", Children: []Node{TextNode(code)}},
+					},
+				})
+
+			case "a", "i", "b", "em", "strong", "code", "s", "u":
+				// Inline elements — accumulate in current paragraph.
+				inlineBuf = append(inlineBuf, convertInlineElement(c))
+
+			case "br":
+				inlineBuf = append(inlineBuf, TextNode("\n"))
+
+			case "blockquote":
+				flushInline()
+				children := convertChildren(c)
+				nodes = append(nodes, ElementNode{Tag: "blockquote", Children: children})
+
+			default:
+				// Unknown tag — convert children inline.
+				inlineBuf = append(inlineBuf, convertInlineChildren(c)...)
+			}
+
+		default:
+			// Skip comments, doctypes, etc.
+		}
 	}
 
+	flushInline()
 	return nodes
+}
+
+// convertInlineChildren converts all children of a node into inline Telegraph nodes.
+func convertInlineChildren(n *html.Node) []Node {
+	var nodes []Node
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		switch {
+		case c.Type == html.TextNode:
+			if c.Data != "" {
+				nodes = append(nodes, TextNode(c.Data))
+			}
+		case c.Type == html.ElementNode:
+			nodes = append(nodes, convertInlineElement(c))
+		}
+	}
+	return nodes
+}
+
+// convertInlineElement converts an inline HTML element to a Telegraph node.
+func convertInlineElement(n *html.Node) Node {
+	switch n.Data {
+	case "a":
+		href := getAttr(n, "href")
+		children := convertInlineChildren(n)
+		if len(children) == 0 {
+			children = []Node{TextNode(href)}
+		}
+		return ElementNode{
+			Tag:      "a",
+			Attrs:    map[string]string{"href": href},
+			Children: children,
+		}
+	case "i", "em":
+		return ElementNode{Tag: "em", Children: convertInlineChildren(n)}
+	case "b", "strong":
+		return ElementNode{Tag: "b", Children: convertInlineChildren(n)}
+	case "code":
+		return ElementNode{Tag: "code", Children: []Node{TextNode(extractText(n))}}
+	case "s":
+		return ElementNode{Tag: "s", Children: convertInlineChildren(n)}
+	case "u":
+		return ElementNode{Tag: "u", Children: convertInlineChildren(n)}
+	case "br":
+		return TextNode("\n")
+	default:
+		// Unknown inline tag — just extract children.
+		children := convertInlineChildren(n)
+		if len(children) == 1 {
+			return children[0]
+		}
+		return ElementNode{Tag: "em", Children: children} // fallback wrapper
+	}
+}
+
+// extractText recursively extracts all text content from a node tree.
+func extractText(n *html.Node) string {
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	var sb strings.Builder
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		sb.WriteString(extractText(c))
+	}
+	return sb.String()
+}
+
+// getAttr returns the value of the named attribute, or empty string.
+func getAttr(n *html.Node, name string) string {
+	for _, a := range n.Attr {
+		if a.Key == name {
+			return a.Val
+		}
+	}
+	return ""
 }
 
 func effectiveURL(item *hackernews.Item) string {
