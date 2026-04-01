@@ -1,0 +1,29 @@
+services:
+  hnbot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - HNB_TELEGRAM_BOT_TOKEN=${HNB_TELEGRAM_BOT_TOKEN}
+      - HNB_TELEGRAM_CHAT_ID=${HNB_TELEGRAM_CHAT_ID}
+      - HNB_FETCH_INTERVAL=${HNB_FETCH_INTERVAL:-30m}
+      - HNB_SCORE_THRESHOLD=${HNB_SCORE_THRESHOLD:-100}
+      - HNB_MAX_STORIES_PER_RUN=${HNB_MAX_STORIES_PER_RUN:-5}
+      - HNB_DIGEST_MODE=${HNB_DIGEST_MODE:-false}
+      - HNB_SILENT_MESSAGES=${HNB_SILENT_MESSAGES:-true}
+      - HNB_DISABLE_PREVIEW=${HNB_DISABLE_PREVIEW:-false}
+      - HNB_LOG_LEVEL=${HNB_LOG_LEVEL:-info}
+      - HNB_DB_PATH=/data/seen.db
+      - HNB_HEALTH_PORT=8080
+    volumes:
+      - hnbot-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  hnbot-data:
+    driver: local
+

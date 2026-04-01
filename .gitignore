@@ -1,0 +1,18 @@
+# Binary
+/bot
+/cmd/bot/bot
+
+# BoltDB
+*.db
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
